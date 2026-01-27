@@ -1,0 +1,755 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Minicons Lab</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inconsolata:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+      body { font-family: Inter, Arial, sans-serif; margin: 12px; background:#f6f7fb; color:#202124 }
+      a{color:inherit}
+      .wrapper { display:flex; gap:18px; align-items:flex-start }
+      .left { width:360px; flex:0 0 360px; max-height: calc(100vh - 80px); overflow:auto }
+      .right { flex:1; min-width:360px; position:sticky; top:12px; align-self:flex-start }
+      textarea { width:100%; height:160px; border-radius:6px; border:1px solid #dfe3ea; padding:8px; resize:vertical; font-size:15px; font-family: Inter, Arial, sans-serif }
+      .row { display:flex; gap:12px; align-items:center; margin:8px 0; flex-wrap:wrap }
+      .controls { background:#ffffff; padding:12px; border-radius:8px; box-shadow:0 2px 8px rgba(19,24,40,0.04) }
+      label { font-size:14px }
+      input[type=text], select { padding:6px 8px; border-radius:6px; border:1px solid #dfe3ea }
+      button { background:#2b7cff; color:white; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:600 }
+      button:hover{opacity:0.95}
+      #plot { width:100%; height: min(520px, calc(100vh - 120px)); background:white; border-radius:8px; box-shadow:0 2px 10px rgba(19,24,40,0.06); padding:18px; box-sizing:border-box; overflow:visible; padding-bottom:72px }
+      .muted { color:#6b7280; font-size:13px }
+
+      /* header/logo styling */
+      .app-header { display:flex; align-items:center; gap:12px; margin-bottom:12px; justify-content:center }
+      .app-header img { width:96px; height:96px; object-fit:contain }
+      .app-header h2 { margin:0; font-size:32px; font-weight:800; letter-spacing:0.4px }
+      .brand-minicons { font-family: Inconsolata, monospace; text-transform: lowercase; color: #4B84AB; font-weight:700; }
+
+      /* ensure form controls size correctly inside their container */
+      .controls, input, textarea, select, button { box-sizing: border-box }
+      .controls { overflow: hidden }
+
+      @media (max-width: 960px) {
+        .app-header { gap:12px }
+        .app-header img { width:64px; height:64px }
+        .app-header h2 { font-size:22px }
+      }
+
+      @media (max-width: 960px) {
+        body { margin: 10px; }
+        .wrapper { flex-direction: column; }
+        .left, .right { width:100%; flex:1 1 auto; max-height:none; position:static; min-width:0; }
+        .row { align-items:flex-start; }
+        #plot { height: 420px; position: relative; padding:12px }
+      }
+      .app-footer { text-align:center; margin-top:18px; color:#6b7280; font-size:13px }
+    </style>
+  <body>
+    <div class="app-header">
+      <img src="{{ url_for('static', filename='minicons-logo.png') }}" alt="Minicons">
+      <h2><span class="brand-minicons">minicons lab</span></h2>
+    </div>
+    <div class="logo-note" style="text-align:left;margin:6px 0 12px 0;color:#6b7280;font-size:13px;max-width:100%">
+      Note: This app only scores the first 10 sentences; extra lines will be ignored.
+    </div>
+
+    <div class="wrapper">
+      <div class="left">
+        <div class="controls">
+          <div class="row"><label style="flex:1">Model:</label><input id="model" value="kanishka/smolm-autoreg-bpe-babylm-1e-3" style="flex:1"></div>
+          <div class="row"><label style="flex:1">Sequences (one per line):</label></div>
+          <textarea id="sequences" placeholder="Enter one sentence per line\nThis is a sentence."></textarea>
+
+          <div class="row">
+            <label>Granularity: <select id="granularity"><option value="word">word</option><option value="token">token</option><option value="parsed">parsed</option></select></label>
+            <label>Value: <select id="value"><option value="surprisal">surprisal</option><option value="logprob">logprob</option></select></label>
+          </div>
+
+          <div class="row">
+            <label><input id="align_x" type="checkbox"> Align X axis (merge common tokens)</label>
+          </div>
+
+          <div class="row">
+            <label><input id="base_two" type="checkbox" checked> base-2</label>
+          </div>
+
+          <div class="row">
+            <label>Device: <input id="device" value="cpu"></label>
+            <label><input id="bos" type="checkbox"> Force BOS true</label>
+          </div>
+
+          <div class="row">
+            <label>Theme: <select id="theme">
+              <option value="plotly_white">Light</option>
+              <option value="plotly_dark">Dark</option>
+              <option value="ggplot2">ggplot2</option>
+              <option value="seaborn">Seaborn</option>
+              <option value="minimal">Minimal</option>
+              <option value="solarized">Solarized</option>
+              <option value="pastel">Pastel</option>
+              <option value="monochrome">Monochrome</option>
+              <option value="neon">Neon</option>
+              <option value="538" selected>538</option>
+              <option value="earth">Earth</option>
+              <option value="night">Night</option>
+            </select></label>
+          </div>
+
+          <div class="row">
+            <label>Parsed agg: <select id="parsed_agg"><option value="sum">sum</option><option value="mean">mean</option></select></label>
+          </div>
+
+          <div class="row">
+            <button id="submit">Score & Plot</button>
+            <div id="status" style="margin-left:12px" class="muted"></div>
+          </div>
+          <div class="muted">Tip: Hover a point to see token and value. Use multiple lines for multiple sequences. Averages are computed only when `token` granularity is selected.</div>
+          <div id="stats" style="margin-top:12px" class="controls" hidden>
+            <strong>Summary</strong>
+            <div id="stats-table" style="margin-top:8px"></div>
+            <div style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+              <label style="display:flex;gap:6px;align-items:center"><button id="download-csv" style="padding:6px 10px">Download table (CSV)</button></label>
+              <label style="display:flex;gap:6px;align-items:center">Plot format:
+                <select id="download-plot-format"><option value="png">PNG</option><option value="svg">SVG</option></select>
+              </label>
+              <button id="download-plot" style="padding:6px 10px">Download plot</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="right">
+        <div id="plot"></div>
+        <div id="detailed-results" class="controls" style="margin-top:12px; display:block;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px;flex-wrap:wrap">
+            <strong>Detailed Results</strong>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button id="download-detailed-csv" style="padding:6px 10px">Download detailed CSV</button>
+            </div>
+          </div>
+          <div id="detailed-table-wrapper" style="width:100%;max-height:360px;overflow:auto;border:1px solid #eee;border-radius:6px;padding:8px;background:transparent">
+            <table id="detailed-table" style="width:100%;border-collapse:collapse">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      async function postScore(payload){
+        const res = await fetch('/score', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        return res.json();
+      }
+
+      // update parsed-agg control based on granularity
+      function updateRankState(){
+        const gran = document.getElementById('granularity').value;
+        const parsedEl = document.getElementById('parsed_agg');
+        if (parsedEl){
+          if (gran !== 'parsed'){
+            parsedEl.disabled = true;
+          } else {
+            parsedEl.disabled = false;
+          }
+        }
+      }
+      document.getElementById('granularity').addEventListener('change', updateRankState);
+      // initial state
+      updateRankState();
+
+      document.getElementById('submit').onclick = async ()=>{
+        const model = document.getElementById('model').value;
+        // read sequences, keep only first 10 non-empty lines
+        const sequencesRaw = document.getElementById('sequences').value || '';
+        const seqLines = sequencesRaw.split(/\r?\n/).map(s=>s.trim()).filter(s=>s.length>0);
+        const MAX_SEQS = 10;
+        const limited = seqLines.slice(0, MAX_SEQS);
+        if (seqLines.length > MAX_SEQS){
+          document.getElementById('status').innerText = `Only first ${MAX_SEQS} sequences will be scored (showing ${limited.length})`;
+        }
+        const sequences = limited.join('\n');
+        const granularity = document.getElementById('granularity').value;
+        const value = document.getElementById('value').value;
+        const base_two = document.getElementById('base_two').checked;
+        // always request ranks for token granularity
+        const rank = (granularity === 'token');
+        const device = document.getElementById('device').value;
+        const bos = document.getElementById('bos').checked ? true : null;
+        const theme = document.getElementById('theme').value;
+
+        document.getElementById('status').innerText = 'Scoring...';
+
+        const parsed_agg = document.getElementById('parsed_agg') ? document.getElementById('parsed_agg').value : 'sum';
+        const payload = { model, sequences, granularity, surprisal: value==='surprisal', base_two, rank, device, bos, parsed_agg };
+        const resp = await postScore(payload);
+        if (resp.error){ document.getElementById('status').innerText = resp.error; return }
+
+        document.getElementById('status').innerText = 'Rendering plot';
+        const results = resp.results || [];
+
+        // build flat data for Vega-Lite
+        const dataVals = [];
+        results.forEach((r, idx)=>{
+          const seqName = r.sequence.substring(0,80);
+          (r.scores||[]).forEach((s,i)=>{
+            // collect extras into a JSON string for display
+            const extras = {};
+            Object.keys(s).forEach(k=>{ if (k!=='token' && k!=='value') extras[k]=s[k]; });
+            dataVals.push({ seq: seqName, pos: i+1, token: s.token||'', value: (s.value==null? null: s.value), extras: Object.keys(extras).length? JSON.stringify(extras): '' });
+          });
+        });
+
+        // compute totals / averages stats and render into stats panel
+        function formatNum(v){ return (v==null || isNaN(v))? '—' : (Math.round(v*100)/100).toFixed(2); }
+        const statsEl = document.getElementById('stats');
+        const statsTableEl = document.getElementById('stats-table');
+        function renderStats(results, valueKey, granularity){
+          if (!results || !results.length){ statsEl.hidden = true; statsTableEl.innerHTML = ''; return; }
+          statsEl.hidden = false;
+          let rows = [];
+          let overallTotal = 0;
+          let overallCount = 0;
+          results.forEach(r=>{
+            const seqName = r.sequence.substring(0,80);
+            const items = (r.scores||[]);
+            const total = items.reduce((s,it)=> s + (it.value==null? 0: Number(it.value)), 0);
+            overallTotal += total;
+            // average only computed for token granularity
+            let avg = null;
+            if (granularity === 'token'){
+              const tokenItems = items.filter(it=> it.token && it.token.length && it.value!=null && !isNaN(it.value));
+              const cnt = tokenItems.length;
+              const tsum = tokenItems.reduce((s,it)=> s + Number(it.value), 0);
+              avg = cnt? (tsum / cnt) : null;
+              overallCount += cnt;
+            }
+            rows.push({ seq: seqName, total, avg });
+          });
+          // build table
+          let html = '<table style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:6px">Sequence</th><th style="text-align:right;padding:6px">Total ('+valueKey+')</th><th style="text-align:right;padding:6px">Avg per token</th></tr></thead><tbody>';
+          rows.forEach(r=>{ html += `<tr><td style="padding:6px;border-top:1px solid #eee">${r.seq}</td><td style="padding:6px;border-top:1px solid #eee;text-align:right">${formatNum(r.total)}</td><td style="padding:6px;border-top:1px solid #eee;text-align:right">${r.avg==null? '—': formatNum(r.avg)}</td></tr>` });
+          // overall row
+          const overallAvg = (overallCount>0)? (overallTotal / overallCount) : null;
+          html += `<tr style="font-weight:600"><td style="padding:6px;border-top:2px solid #ddd">Overall</td><td style="padding:6px;border-top:2px solid #ddd;text-align:right">${formatNum(overallTotal)}</td><td style="padding:6px;border-top:2px solid #ddd;text-align:right">${overallAvg==null? '—': formatNum(overallAvg)}</td></tr>`;
+          html += '</tbody></table>';
+          statsTableEl.innerHTML = html;
+        }
+
+        // store last results so downloads and re-renders can reuse
+        window._lastResults = results;
+        window._lastValueKey = value; // 'surprisal' or 'logprob'
+        window._lastGranularity = granularity;
+        // render stats summary (totals and token-only averages)
+        renderStats(results, value, granularity);
+        // render detailed results table
+        renderDetailedTable(results, value, granularity);
+
+        // wire download buttons (only needs to be set once)
+        if (!window._downloadsWired){
+          const csvBtn = document.getElementById('download-csv');
+          const plotBtn = document.getElementById('download-plot');
+          const detailedBtn = document.getElementById('download-detailed-csv');
+          if (csvBtn) csvBtn.addEventListener('click', ()=>{ downloadCSV(); });
+          if (plotBtn) plotBtn.addEventListener('click', ()=>{ const fmt = document.getElementById('download-plot-format').value; downloadPlot(fmt); });
+          if (detailedBtn) detailedBtn.addEventListener('click', ()=>{ downloadDetailedCSV(); });
+          window._downloadsWired = true;
+        }
+
+        // helper: build CSV from results
+        function buildStatsCSV(results, valueKey, granularity){
+          const rows = [];
+          const header = ['Sequence', valueKey, 'avg_token'];
+          rows.push(header);
+          let overallTotal = 0; let overallCount = 0;
+          results.forEach(r=>{
+            const seq = (r.sequence||'').replace(/\r?\n/g,' ');
+            const items = (r.scores||[]);
+            const total = items.reduce((s,it)=> s + (it.value==null? 0: Number(it.value)), 0);
+            let avg = '';
+            if (granularity === 'token'){
+              const tokenItems = items.filter(it=> it.token && it.token.length && it.value!=null && !isNaN(it.value));
+              const cnt = tokenItems.length;
+              const tsum = tokenItems.reduce((s,it)=> s + Number(it.value), 0);
+              avg = cnt? (tsum / cnt) : '';
+              overallCount += cnt;
+            }
+            overallTotal += total;
+            const safeSeq = `"${seq.replace(/"/g,'""') }"`;
+            rows.push([safeSeq, (typeof total.toFixed === 'function')? total.toFixed(6): total, (avg===''? '': (typeof avg.toFixed==='function'? avg.toFixed(6): avg))]);
+          });
+          const overallAvg = (overallCount>0)? (overallTotal / overallCount) : '';
+          rows.push(['Overall', (typeof overallTotal.toFixed === 'function')? overallTotal.toFixed(6): overallTotal, (overallAvg===''? '': (typeof overallAvg.toFixed==='function'? overallAvg.toFixed(6): overallAvg))]);
+          return rows.map(r=> r.join(',')).join('\n');
+        }
+
+        function downloadCSV(){
+          const res = window._lastResults || [];
+          if (!res.length){ alert('No results to download'); return }
+          const csv = buildStatsCSV(res, window._lastValueKey||'value', window._lastGranularity||'token');
+          const defaultName = (window._lastValueKey||'results') + '-stats';
+          const respName = prompt('Filename (without extension):', defaultName);
+          if (respName === null) return; // user cancelled
+          const name = (respName.trim() || defaultName).replace(/[\\/]+/g,'_').replace(/\s+/g,'-');
+          const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = `${name}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+        }
+
+        // Detailed results table rendering and download
+        function renderDetailedTable(results, valueKey, granularity){
+          const wrapper = document.getElementById('detailed-results');
+          const table = document.getElementById('detailed-table');
+          if (!results || !results.length){ wrapper.style.display = 'none'; table.querySelector('thead').innerHTML=''; table.querySelector('tbody').innerHTML=''; return; }
+          wrapper.style.display = 'block';
+          const head = table.querySelector('thead');
+          const body = table.querySelector('tbody');
+          const tokenHeader = (granularity==='token') ? 'token' : 'word';
+          // build headers (add a numeric word/token id column between sequence_id and token)
+          let ths = '<tr style="border-bottom:1px solid #eee"><th style="padding:6px;text-align:right">sequence_id</th><th style="padding:6px;text-align:right">word_id</th><th style="padding:6px;text-align:left">'+tokenHeader+'</th><th style="padding:6px;text-align:right">'+valueKey+'</th>';
+          if (granularity==='token') ths += '<th style="padding:6px;text-align:right">rank</th>';
+          ths += '</tr>';
+          head.innerHTML = ths;
+          // helper to robustly extract rank from score object
+          function getRankFromScore(s){
+            if (!s) return '';
+            if (s.rank!=null) return s.rank;
+            if (s.Rank!=null) return s.Rank;
+            if (s.rank_value!=null) return s.rank_value;
+            if (s.rankVal!=null) return s.rankVal;
+            // search for any key containing 'rank'
+            for (const k of Object.keys(s)){
+              if (/rank/i.test(k) && s[k]!=null) return s[k];
+            }
+            return '';
+          }
+
+          // build rows (sequence_id is numeric index starting at 1)
+          let rowsHtml = '';
+          results.forEach((r, ridx)=>{
+            const seqNum = (ridx + 1);
+            (r.scores||[]).forEach((s, sidx)=>{
+              const token = s.token || '';
+              const val = (s.value==null || isNaN(s.value))? '': Number(s.value).toFixed(6);
+              const rankVal = getRankFromScore(s);
+              const wordId = (sidx + 1);
+              rowsHtml += `<tr><td style="padding:6px;border-top:1px solid #f2f4f6;text-align:right">${seqNum}</td><td style="padding:6px;border-top:1px solid #f2f4f6;text-align:right">${wordId}</td><td style="padding:6px;border-top:1px solid #f2f4f6">${escapeHtml(token)}</td><td style="padding:6px;border-top:1px solid #f2f4f6;text-align:right">${val}</td>`;
+              if (granularity==='token') rowsHtml += `<td style="padding:6px;border-top:1px solid #f2f4f6;text-align:right">${rankVal}</td>`;
+              rowsHtml += '</tr>';
+            });
+          });
+          body.innerHTML = rowsHtml;
+        }
+
+        function escapeHtml(s){ if (s==null) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+        function buildDetailedCSV(results, valueKey, granularity){
+          const headerCols = ['sequence_id','word_id', (granularity==='token'? 'token':'word'), valueKey];
+          if (granularity==='token') headerCols.push('rank');
+          const rows = [headerCols];
+          results.forEach((r, ridx)=>{
+            const seqNum = (ridx + 1);
+            (r.scores||[]).forEach((s, sidx)=>{
+              const token = s.token||'';
+              const val = (s.value==null || isNaN(s.value))? '': Number(s.value).toFixed(6);
+              // reuse getRankFromScore if available, otherwise fallback
+              let rankVal = '';
+              try { if (typeof getRankFromScore === 'function') rankVal = getRankFromScore(s); } catch(e){ rankVal = (s.rank!=null? s.rank : ''); }
+              const wordId = (sidx + 1);
+              const safeSeq = seqNum;
+              const safeToken = `"${String(token).replace(/"/g,'""')}"`;
+              const cols = [safeSeq, wordId, safeToken, val];
+              if (granularity==='token') cols.push(rankVal);
+              rows.push(cols);
+            });
+          });
+          return rows.map(r=> r.join(',')).join('\n');
+        }
+
+        function downloadDetailedCSV(){
+          const res = window._lastResults || [];
+          if (!res.length){ alert('No results to download'); return }
+          const csv = buildDetailedCSV(res, window._lastValueKey||'value', window._lastGranularity||'token');
+          const base = (window._lastValueKey||'results');
+          const defaultName = base + '_detailed';
+          const respName = prompt('Filename (without extension):', defaultName);
+          if (respName === null) return; // user cancelled
+          const name = (respName.trim() || defaultName).replace(/[\\/]+/g,'_').replace(/\s+/g,'-');
+          const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a'); a.href = url; a.download = `${name}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+        }
+
+        function downloadPlot(fmt){
+          const plot = document.getElementById('plot');
+          const svg = plot.querySelector('svg');
+          if (!svg){ alert('Plot not found'); return }
+          const width = parseFloat(svg.getAttribute('width')) || svg.clientWidth;
+          const height = parseFloat(svg.getAttribute('height')) || svg.clientHeight;
+
+          // clone the SVG so we can append a legend into the export without modifying the on-screen SVG
+          const cloned = svg.cloneNode(true);
+
+          // extract legend items from the HTML legend (if present)
+          const legendDiv = plot.querySelector('.plot-legend');
+          const legendItems = [];
+          if (legendDiv){
+            Array.from(legendDiv.children).forEach(item=>{
+              const sw = item.querySelector('span');
+              const txt = item.querySelector('div');
+              const label = txt ? txt.textContent.trim() : item.textContent.trim();
+              let color = '#000';
+              try { color = window.getComputedStyle(sw).backgroundColor || sw.style.background || '#000'; } catch(e){}
+              legendItems.push({label, color});
+            });
+          }
+
+          // append a simple SVG legend to the cloned SVG (stacked on the right)
+          if (legendItems.length){
+            const xmlns = 'http://www.w3.org/2000/svg';
+            const g = document.createElementNS(xmlns, 'g');
+            g.setAttribute('class','export-legend');
+            const pad = 12;
+            const sw = 12; // swatch size
+            const spacing = 22;
+            // place legend to the right of the original svg content
+            const legendX = width - Math.min(180, Math.floor(width*0.25)) + pad; // attempt to place in right margin area
+            const legendY = 16;
+            g.setAttribute('transform', `translate(${legendX}, ${legendY})`);
+            // pick a foreground color from the plot container
+            let fg = '#202124';
+            try { fg = window.getComputedStyle(plot).color || fg; } catch(e){}
+            legendItems.forEach((li,i)=>{
+              const y = i * spacing;
+              const rect = document.createElementNS(xmlns, 'rect');
+              rect.setAttribute('x', 0);
+              rect.setAttribute('y', y);
+              rect.setAttribute('width', sw);
+              rect.setAttribute('height', sw);
+              rect.setAttribute('rx', 2);
+              rect.setAttribute('ry', 2);
+              rect.setAttribute('fill', li.color);
+              const text = document.createElementNS(xmlns, 'text');
+              text.setAttribute('x', sw + 8);
+              text.setAttribute('y', y + 10);
+              text.setAttribute('fill', fg);
+              text.setAttribute('font-family', 'Inter, Arial, sans-serif');
+              text.setAttribute('font-size', '14px');
+              text.textContent = li.label;
+              g.appendChild(rect);
+              g.appendChild(text);
+            });
+            cloned.appendChild(g);
+            // increase exported svg width if necessary so legend is visible
+            const newW = width + Math.min(220, Math.floor(width*0.35));
+            cloned.setAttribute('width', newW);
+          }
+
+          const serializer = new XMLSerializer();
+          const svgStr = serializer.serializeToString(cloned);
+          if (fmt === 'svg'){
+            const defaultName = (window._lastValueKey||'plot');
+            const respName = prompt('Filename (without extension):', defaultName);
+            if (respName === null) return; // user cancelled
+            const name = (respName.trim() || defaultName).replace(/[\\/]+/g,'_').replace(/\s+/g,'-');
+            const blob = new Blob([svgStr], {type: 'image/svg+xml;charset=utf-8'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = `${name}.svg`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+            return;
+          }
+
+          // PNG: draw the cloned SVG (which now contains the legend) to canvas
+          const img = new Image();
+          const svg64 = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgStr);
+          img.onload = ()=>{
+            // use cloned width/height (may have changed)
+            const outW = parseFloat(cloned.getAttribute('width')) || width;
+            const outH = parseFloat(cloned.getAttribute('height')) || height;
+            const canvas = document.createElement('canvas'); canvas.width = outW; canvas.height = outH;
+            const ctx = canvas.getContext('2d');
+            try { ctx.fillStyle = window.getComputedStyle(plot).backgroundColor || '#fff'; ctx.fillRect(0,0,canvas.width,canvas.height); } catch(e){}
+            ctx.drawImage(img, 0, 0, outW, outH);
+            const png = canvas.toDataURL('image/png');
+            const defaultName = (window._lastValueKey||'plot');
+            const name = (prompt('Filename (without extension):', defaultName) || defaultName).replace(/[\\/]+/g,'_').replace(/\s+/g,'-');
+            const a = document.createElement('a'); a.href = png; a.download = `${name}.png`; document.body.appendChild(a); a.click(); a.remove();
+          };
+          img.onerror = ()=>{ alert('Could not render plot for PNG download'); };
+          img.src = svg64;
+        }
+
+        // theme mapping for quick preview (kept for backwards compatibility)
+        let bg = '#ffffff', fg = '#202124';
+        if (theme === 'plotly_dark'){ bg = '#0b0f14'; fg = '#e6eef6'; }
+        else if (theme === 'seaborn'){ bg = '#f6f6f6'; fg = '#202124'; }
+        else if (theme === 'ggplot2'){ bg = '#f0f0f0'; fg = '#202124'; }
+        else if (theme === 'minimal'){ bg = '#ffffff'; fg = '#1f2937'; }
+        else if (theme === 'solarized'){ bg = '#fdf6e3'; fg = '#002b36'; }
+        else if (theme === 'pastel'){ bg = '#fffaf0'; fg = '#2b2b2b'; }
+        else if (theme === 'monochrome'){ bg = '#ffffff'; fg = '#111827'; }
+        else if (theme === 'neon'){ bg = '#05060a'; fg = '#e6fffb'; }
+        else if (theme === '538'){ bg = '#ffffff'; fg = '#2b2b2b'; }
+        else if (theme === 'earth'){ bg = '#fbfaf5'; fg = '#2b2b21'; }
+        else if (theme === 'night'){ bg = '#071022'; fg = '#e6eef6'; }
+
+        // Render with D3
+        let _lastDataVals = null;
+        let _lastTheme = null;
+        function debounce(fn, wait){ let t=null; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), wait); }; }
+        function renderD3(dataVals, theme, xLabels){
+          const container = document.getElementById('plot');
+          container.innerHTML = '';
+          const cw = container.clientWidth;
+          const ch = container.clientHeight;
+          // extra bottom padding so axis labels and titles stay inside the box
+          const margin = {top:48, right:200, bottom:96, left:64};
+          const width = Math.max(200, cw - margin.left - margin.right);
+          const height = Math.max(120, ch - margin.top - margin.bottom);
+
+          // theme colors and palette
+          let bgColor = '#ffffff', fgColor = '#202124', gridColor = '#e6e9ef', tooltipBg = '#ffffff', areaOpacity = 0.08;
+          if (theme === 'plotly_dark'){ bgColor = '#0b0f14'; fgColor = '#e6eef6'; gridColor='rgba(255,255,255,0.06)'; tooltipBg='#071022'; areaOpacity=0.06; }
+          else if (theme === 'seaborn'){ bgColor = '#f6f6f6'; fgColor = '#202124'; gridColor='#eaecef'; tooltipBg='#ffffff'; areaOpacity=0.08; }
+          else if (theme === 'ggplot2'){ bgColor = '#f0f0f0'; fgColor = '#202124'; gridColor='#e8e8e8'; tooltipBg='#ffffff'; areaOpacity=0.08; }
+          else if (theme === 'minimal'){ bgColor = '#ffffff'; fgColor = '#1f2937'; gridColor='#f1f5f9'; tooltipBg='#ffffff'; areaOpacity=0.06; }
+          else if (theme === 'solarized'){ bgColor = '#fdf6e3'; fgColor = '#002b36'; gridColor='#eee6cc'; tooltipBg='#fffef6'; areaOpacity=0.09; }
+          else if (theme === 'pastel'){ bgColor = '#fffaf0'; fgColor = '#2b2b2b'; gridColor='#fff0e6'; tooltipBg='#fffaf0'; areaOpacity=0.12; }
+          else if (theme === 'monochrome'){ bgColor = '#ffffff'; fgColor = '#111827'; gridColor='#f3f4f6'; tooltipBg='#ffffff'; areaOpacity=0.06; }
+          else if (theme === 'neon'){ bgColor = '#05060a'; fgColor = '#dff7ff'; gridColor='rgba(255,255,255,0.04)'; tooltipBg='#071022'; areaOpacity=0.06; }
+          else if (theme === '538'){ bgColor = '#ffffff'; fgColor = '#2b2b2b'; gridColor='#e6e9ef'; tooltipBg='#ffffff'; areaOpacity=0.12; }
+          else if (theme === 'earth'){ bgColor = '#fbfaf5'; fgColor = '#2b2b21'; gridColor='#efeae0'; tooltipBg='#fbfaf5'; areaOpacity=0.1; }
+          else if (theme === 'night'){ bgColor = '#071022'; fgColor = '#e6eef6'; gridColor='rgba(255,255,255,0.04)'; tooltipBg='#071022'; areaOpacity=0.05; }
+
+          container.style.background = bgColor;
+          container.style.position = 'relative';
+
+          const svg = d3.select(container).append('svg')
+            .attr('width', width + margin.left + margin.right)
+            .attr('height', height + margin.top + margin.bottom)
+            .style('font-family', 'Inter, Arial, sans-serif');
+
+          const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+          // group by seq
+          const groups = d3.group(dataVals, d=>d.seq);
+          const seqs = Array.from(groups.keys());
+
+          // x domain: discrete positions (use aligned labels if provided)
+          const allPos = (xLabels && xLabels.length) ? xLabels.map((_,i)=>i+1) : Array.from(new Set(dataVals.map(d=>d.pos))).sort((a,b)=>a-b);
+          const x = d3.scalePoint().domain(allPos).range([0, width]).padding(0.5);
+
+          // y domain: numeric values
+          const vals = dataVals.map(d=>d.value).filter(v=>v!=null && !isNaN(v));
+          const yDomain = vals.length? [d3.min(vals), d3.max(vals)] : [0,1];
+          const y = d3.scaleLinear().domain(yDomain).nice().range([height, 0]);
+
+          let palette = ['#2b7cff','#ff9f43','#6bc26b','#ef6a6a','#8f6be8','#b07c64','#e895c8','#9aa0a6','#d4c44a','#3bb1c9'];
+          // theme-specific palettes
+          if (theme === 'plotly_dark' || theme === 'night' || theme === 'neon'){
+            palette = ['#63b3ff','#ffa94d','#7ef38a','#ff6b6b','#b392ff','#f0a07b','#ffb3e6','#9fb0b6','#ffe37a','#4bd1de'];
+          } else if (theme === 'solarized'){
+            palette = ['#268bd2','#cb4b16','#859900','#d33682','#6c71c4','#b58900','#2aa198','#93a1a1','#b58900','#2aa198'];
+          } else if (theme === 'pastel'){
+            palette = ['#a6d4fa','#ffd8a8','#b6f2c4','#ffb3b3','#c9b3ff','#f0d7c2','#ffd6f0','#d7dbe0','#fff0b3','#b3f0ef'];
+          } else if (theme === 'monochrome'){
+            palette = ['#1f2937','#374151','#4b5563','#6b7280','#9ca3af','#d1d5db','#e5e7eb','#f3f4f6','#6b7280','#111827'];
+          } else if (theme === 'earth'){
+            palette = ['#3a6a40','#a66a3a','#7f9b6f','#c07a7a','#8b6f9b','#ab8a5f','#dcb6a7','#9aa0a6','#c9b44a','#7aa8a0'];
+          } else if (theme === '538'){
+            palette = ['#30a2da','#fc4f30','#e5ae38','#6d904f','#8b8b8b','#b07c64','#b76fb2','#9aa0a6','#d4c44a','#3bb1c9'];
+          }
+          const color = d3.scaleOrdinal().domain(seqs).range(palette);
+
+          // axes
+          const xAxis = d3.axisBottom(x).tickValues(allPos).tickFormat(d=>{
+            if (xLabels && xLabels.length){
+              const lab = xLabels[d-1] || '';
+              return lab.length>18? lab.slice(0,16)+'…': lab;
+            }
+            return d3.format('d')(d);
+          });
+          const yAxis = d3.axisLeft(y).ticks(6).tickSizeOuter(0);
+
+          g.append('g').attr('class','y axis').call(yAxis).selectAll('text').attr('fill', fgColor).style('font-size','16px');
+          // rotate tick labels if they are long (and attach full label as title)
+          const xAxisG = g.append('g').attr('class','x axis').attr('transform', `translate(0,${height})`).call(xAxis);
+          xAxisG.selectAll('text').attr('fill', fgColor).style('font-size','15px').attr('transform','rotate(-25)').style('text-anchor','end').each(function(d){ if (xLabels && xLabels.length){ this.setAttribute('title', xLabels[d-1]||''); } });
+
+          // axis labels (Title Case)
+          function toTitleCase(s){ return String(s||'').replace(/[_-]/g,' ').split(/\s+/).map(w=> w.length? (w[0].toUpperCase()+w.slice(1)) : '').join(' ').trim(); }
+          const yLabel = (value==='logprob')? 'Log Prob' : toTitleCase(value);
+          svg.append('text').attr('x', margin.left/3).attr('y', margin.top + (height/2)).attr('transform', `rotate(-90, ${margin.left/3}, ${margin.top + (height/2)})`).text(yLabel).style('font-size','17px').style('fill', fgColor).style('font-family','Inter, Arial, sans-serif');
+          // place x-axis label inside the svg using margin.bottom to compute safe offset
+          const xLabelY = margin.top + height + Math.max(24, Math.floor(margin.bottom * 0.6));
+          svg.append('text').attr('x', margin.left + (width/2)).attr('y', xLabelY).text(toTitleCase('position')).style('font-size','17px').style('fill', fgColor).style('text-anchor','middle').style('font-family','Inter, Arial, sans-serif');
+
+          // grid lines
+          g.append('g').attr('class','grid').selectAll('line')
+            .data(y.ticks(6))
+            .enter().append('line')
+              .attr('x1',0).attr('x2',width)
+              .attr('y1',d=>y(d)).attr('y2',d=>y(d))
+              .attr('stroke', gridColor).attr('stroke-width', 1);
+
+          // area + line generators (no smoothing) and skipping nulls
+          const curve = d3.curveLinear;
+          const area = d3.area()
+            .defined(d=>d.value!=null && !isNaN(d.value))
+            .x(d=>x(d.pos))
+            .y0(y.range()[0])
+            .y1(d=>y(d.value))
+            .curve(curve);
+          const line = d3.line()
+            .defined(d=>d.value!=null && !isNaN(d.value))
+            .x(d=>x(d.pos))
+            .y(d=>y(d.value))
+            .curve(curve);
+
+          // tooltip
+          const tooltip = d3.select('body').append('div').attr('class','ts-tooltip').style('position','absolute').style('pointer-events','none').style('z-index',10000).style('background', tooltipBg).style('border','1px solid rgba(0,0,0,0.08)').style('padding','10px').style('border-radius','8px').style('font-family','Inter, Arial, sans-serif').style('display','none').style('box-shadow','0 6px 20px rgba(15,23,42,0.12)').style('color', fgColor).style('font-size','14px');
+
+          // draw each sequence (area under curve, smoothed line, smaller points)
+          seqs.forEach((s, idx)=>{
+            const items = groups.get(s).slice().sort((a,b)=>a.pos - b.pos);
+            // area (non-interactive so points remain hoverable)
+            g.append('path').datum(items).attr('fill', color(s)).attr('opacity', areaOpacity).attr('d', area).attr('pointer-events','none');
+            // line
+            g.append('path').datum(items).attr('fill','none').attr('stroke', color(s)).attr('stroke-width', 2.5).attr('stroke-linecap','round').attr('d', line);
+            // points
+            g.selectAll(`.pt-${idx}`).data(items).enter().append('circle')
+              .attr('class', `pt-${idx}`)
+              .attr('cx', d=>x(d.pos)).attr('cy', d=> d.value==null? null : y(d.value))
+              .attr('r', 4)
+              .attr('fill', '#fff')
+              .attr('stroke', color(s)).attr('stroke-width', 1.5).attr('pointer-events','all')
+              .style('cursor','pointer')
+              .on('mouseover', (event,d)=>{
+                // parse extras JSON if present and render key: value pairs (handles rank objects)
+                let extrasHTML = '';
+                if (d.extras && d.extras.length){
+                  try{
+                    const obj = JSON.parse(d.extras);
+                    if (obj && typeof obj === 'object'){
+                      Object.keys(obj).forEach(k=>{
+                        const v = (typeof obj[k] === 'object')? JSON.stringify(obj[k]) : obj[k];
+                        extrasHTML += `<br>${k}: ${v}`;
+                      });
+                    } else {
+                      extrasHTML = `<br>${d.extras}`;
+                    }
+                  } catch(e){ extrasHTML = `<br>${d.extras}`; }
+                }
+                // format numeric value and compute probability
+                let displayVal = '';
+                let probHTML = '';
+                if (d.value!=null && !isNaN(d.value)){
+                  const num = Number(d.value);
+                  displayVal = num.toFixed(3);
+                  let prob = null;
+                  if (value === 'surprisal'){ prob = Math.exp(-1 * num); }
+                  else if (value === 'logprob'){ prob = Math.exp(num); }
+                  if (prob!=null && !isNaN(prob)) probHTML = `<br>prob: ${prob.toFixed(3)}`;
+                }
+                const label = toTitleCase(value);
+                const html = `<b>${d.token}</b><br>${label}: ${displayVal || ''}${probHTML}<br>pos: ${d.pos}` + extrasHTML;
+                tooltip.style('display','block').html(html);
+                // highlight point
+                d3.select(event.currentTarget).attr('r',6);
+              })
+              .on('mousemove', (event)=>{ tooltip.style('left', (event.pageX+12)+'px').style('top', (event.pageY+12)+'px'); })
+              .on('mouseout', (event,d)=>{ tooltip.style('display','none'); d3.select(event.currentTarget).attr('r',4); });
+          });
+
+          // title
+          // Title: make first word title-cased (special-case 'logprob')
+          function firstWordTitle(v){ if (!v) return ''; if (v==='logprob') return 'Log Prob'; return (v[0]||'').toUpperCase() + (v.slice(1)||''); }
+          const titleFirst = firstWordTitle(value);
+          svg.append('text').attr('x', margin.left).attr('y', 22).text(`${titleFirst} per token/word`).style('font-size','16px').style('fill', fgColor).style('font-family','Inter, Arial, sans-serif').style('font-weight','700');
+
+          // legend: use HTML overlay so it can wrap and have padding
+          const availableRight = margin.right;
+          const placeBelow = cw < 700 || availableRight < 140;
+          const legendLeft = placeBelow ? 12 : (margin.left + width + 12);
+          const legendTop = placeBelow ? (margin.top + height + 16) : margin.top;
+          // remove prior overlay if present (search sibling area to avoid leftover legends)
+          const parent = container.parentNode || document;
+          const old = parent.querySelector('.plot-legend'); if (old) old.remove();
+          const legendDiv = document.createElement('div');
+          legendDiv.className = 'plot-legend';
+          // place legend below the plot as a responsive, wrapping flex row
+          legendDiv.style.position = 'relative';
+          legendDiv.style.width = '100%';
+          legendDiv.style.maxWidth = (width) + 'px';
+          legendDiv.style.padding = '10px 6px';
+          legendDiv.style.boxSizing = 'border-box';
+          legendDiv.style.background = 'transparent';
+          legendDiv.style.display = 'flex';
+          legendDiv.style.flexDirection = 'row';
+          legendDiv.style.flexWrap = 'wrap';
+          legendDiv.style.justifyContent = 'center';
+          legendDiv.style.gap = '10px 18px';
+          legendDiv.style.color = fgColor;
+          legendDiv.style.fontFamily = 'Inter, Arial, sans-serif';
+          legendDiv.style.fontSize = '15px';
+          legendDiv.style.pointerEvents = 'auto';
+          seqs.forEach((s)=>{
+            const item = document.createElement('div');
+            item.style.display = 'flex';
+            item.style.alignItems = 'center';
+            item.style.gap = '8px';
+            item.style.padding = '6px 8px';
+            item.style.borderRadius = '6px';
+            item.style.background = 'rgba(0,0,0,0)';
+            const sw = document.createElement('span');
+            sw.style.width = '12px';
+            sw.style.height = '12px';
+            sw.style.background = color(s);
+            sw.style.borderRadius = '2px';
+            sw.style.flex = '0 0 12px';
+            const txt = document.createElement('div');
+            txt.textContent = s;
+            txt.style.whiteSpace = 'normal';
+            txt.style.wordBreak = 'break-word';
+            txt.style.flex = '1 1 auto';
+            item.appendChild(sw);
+            item.appendChild(txt);
+            legendDiv.appendChild(item);
+          });
+          // append the legend as a sibling after the plot so it pushes content down
+          if (container.parentNode) container.parentNode.insertBefore(legendDiv, container.nextSibling);
+          else container.appendChild(legendDiv);
+
+          // cleanup tooltip on replot
+          setTimeout(()=>{ const t = document.querySelectorAll('.ts-tooltip'); if (t.length>1){ for(let i=0;i<t.length-1;i++) t[i].remove(); } }, 1000);
+        }
+        // compute optional aligned x-axis labels
+        const align = document.getElementById('align_x') ? document.getElementById('align_x').checked : false;
+        let xLabels = null;
+        if (align){
+          const seqNames = Array.from(new Set(dataVals.map(d=>d.seq)));
+          const maxPos = dataVals.length ? Math.max(...dataVals.map(d=>d.pos)) : 0;
+          xLabels = [];
+          for (let p=1;p<=maxPos;p++){
+            const tokens = seqNames.map(s=>{ const e = dataVals.find(d=>d.seq===s && d.pos===p); return e? e.token : ''; });
+            const uniq = Array.from(new Set(tokens.filter(t=>t && t.length)));
+            xLabels.push(uniq.length? uniq.join('/') : '');
+          }
+        }
+
+        // store last and render once
+        _lastDataVals = dataVals;
+        _lastTheme = theme;
+        let _lastXLabels = xLabels;
+        renderD3(dataVals, theme, xLabels);
+        // re-render on resize (debounced)
+        window.addEventListener('resize', debounce(()=>{ if (_lastDataVals) renderD3(_lastDataVals, _lastTheme, _lastXLabels); }, 200));
+      }
+    </script>
+  </body>
+  <div class="app-footer">Made with vibes by Kanishka Misra and GPT-5 mini.</div>
+</html>
