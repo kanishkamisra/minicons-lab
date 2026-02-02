@@ -1,5 +1,7 @@
 from flask import Flask, render_template, request, jsonify
 from threading import Lock
+import csv
+import io
 from nltk.tokenize import TweetTokenizer
 import traceback
 import os
@@ -23,6 +25,8 @@ def index():
 @app.route("/score", methods=["POST"])
 def score():
     data = request.get_json()
+    # Support CSV content (string) with two columns: sequence_id, sequence
+    csv_content = data.get("csv", None)
     sequences_text = data.get("sequences", "")
     model_name = data.get("model", "")
     device = data.get("device", "cpu")
@@ -33,7 +37,49 @@ def score():
     parsed_agg = data.get("parsed_agg", "sum")
     bos_explicit = data.get("bos", None)
 
-    sequences = [s.strip() for s in sequences_text.splitlines() if s.strip()]
+    sequences = []
+    seq_ids = []
+    if csv_content:
+        # parse CSV content (allow header)
+        try:
+            reader = csv.reader(csv_content.splitlines())
+            for i, row in enumerate(reader):
+                if not row:
+                    continue
+                if len(row) >= 2:
+                    sid = row[0].strip()
+                    seq = row[1].strip()
+                else:
+                    # single column: treat as sequence only, id by index
+                    sid = str(i+1)
+                    seq = row[0].strip()
+                if seq:
+                    seq_ids.append(sid)
+                    sequences.append(seq)
+        except Exception:
+            return jsonify({"error": "Could not parse CSV content", "trace": traceback.format_exc()}), 400
+    else:
+        sequences = [s.strip() for s in sequences_text.splitlines() if s.strip()]
+
+    if not sequences:
+        # fallback: try to load server-side test-sentences.csv if present
+        try:
+            here = os.path.dirname(__file__)
+            sample_path = os.path.join(here, 'test-sentences.csv')
+            if os.path.exists(sample_path):
+                with open(sample_path, 'r', encoding='utf-8') as fh:
+                    reader = csv.reader(fh)
+                    for i, row in enumerate(reader):
+                        if not row: continue
+                        if len(row) >= 2:
+                            sid = row[0].strip(); seq = row[1].strip()
+                        else:
+                            sid = str(i+1); seq = row[0].strip()
+                        if seq:
+                            seq_ids.append(sid); sequences.append(seq)
+        except Exception:
+            pass
+
     if not sequences:
         return jsonify({"error": "No sequences provided"}), 400
 
@@ -216,6 +262,252 @@ def score():
                 seq_res = []
 
         results.append({"sequence": seq, "scores": seq_res})
+
+    return jsonify({"results": results})
+
+
+@app.route("/score_batched", methods=["POST"])
+def score_batched():
+    """Batched scoring endpoint for large-scale usage.
+    Behaves like `/score` but sends sequences to the scorer in batches
+    to reduce overhead. Accepts an optional `batch_size` integer.
+    """
+    data = request.get_json()
+    # Support CSV content (string) with two columns: sequence_id, sequence
+    csv_content = data.get("csv", None)
+    sequences_text = data.get("sequences", "")
+    model_name = data.get("model", "")
+    device = data.get("device", "cpu")
+    granularity = data.get("granularity", "word")
+    surprisal = bool(data.get("surprisal", True))
+    base_two = bool(data.get("base_two", True))
+    rank = bool(data.get("rank", False))
+    parsed_agg = data.get("parsed_agg", "sum")
+    bos_explicit = data.get("bos", None)
+    batch_size = int(data.get("batch_size", 16) or 16)
+
+    sequences = []
+    seq_ids = []
+    if csv_content:
+        # use DictReader to skip header line (if present) and map columns
+        try:
+            f = io.StringIO(csv_content)
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames or []
+            for i, row in enumerate(reader):
+                if not row:
+                    continue
+                if len(fieldnames) >= 2:
+                    sid = (row.get(fieldnames[0]) or '').strip()
+                    seq = (row.get(fieldnames[1]) or '').strip()
+                else:
+                    # single-column CSV: treat as sequence only
+                    sid = str(i+1)
+                    key = fieldnames[0] if fieldnames else list(row.keys())[0]
+                    seq = (row.get(key) or '').strip()
+                if seq:
+                    seq_ids.append(sid)
+                    sequences.append(seq)
+        except Exception:
+            return jsonify({"error": "Could not parse CSV content", "trace": traceback.format_exc()}), 400
+    else:
+        sequences = [s.strip() for s in sequences_text.splitlines() if s.strip()]
+
+    if not sequences:
+        # fallback: try to load server-side test-sentences.csv if present (use DictReader to skip header)
+        try:
+            here = os.path.dirname(__file__)
+            sample_path = os.path.join(here, 'test-sentences.csv')
+            if os.path.exists(sample_path):
+                with open(sample_path, 'r', encoding='utf-8') as fh:
+                    reader = csv.DictReader(fh)
+                    fieldnames = reader.fieldnames or []
+                    for i, row in enumerate(reader):
+                        if not row: continue
+                        if len(fieldnames) >= 2:
+                            sid = (row.get(fieldnames[0]) or '').strip(); seq = (row.get(fieldnames[1]) or '').strip()
+                        else:
+                            sid = str(i+1); key = fieldnames[0] if fieldnames else list(row.keys())[0]; seq = (row.get(key) or '').strip()
+                        if seq:
+                            seq_ids.append(sid); sequences.append(seq)
+        except Exception:
+            pass
+
+    if not sequences:
+        return jsonify({"error": "No sequences provided"}), 400
+
+    try:
+        from minicons import scorer
+    except Exception:
+        return jsonify({"error": "could not import minicons.scorer", "trace": traceback.format_exc()}), 500
+
+    if bos_explicit is None:
+        BOS = determine_bos(model_name)
+    else:
+        BOS = bool(bos_explicit)
+
+    with cache_lock:
+        if cache["model"] != model_name or cache["scorer"] is None:
+            cache["model"] = model_name
+            cache["scorer"] = scorer.IncrementalLMScorer(model_name, device=device)
+        lm = cache["scorer"]
+
+    word_tokenizer = TweetTokenizer().tokenize
+
+    results = []
+
+    # helper to process token/word items into normalized dicts
+    def normalize_item(t, surprisal_flag):
+        if isinstance(t, dict):
+            token = t.get("token") or t.get("text") or ''
+            value = t.get("surprisal") if surprisal_flag else t.get("logprob")
+            extras = {k: v for k, v in t.items() if k not in ("token", "surprisal", "logprob")}
+            return {"token": token, "value": value, **extras}
+        elif isinstance(t, (list, tuple)) and len(t) >= 2:
+            token, value = t[0], t[1]
+            r = {"token": token, "value": value}
+            if len(t) >= 3:
+                try:
+                    r["rank"] = t[2]
+                except Exception:
+                    r["extra_2"] = t[2]
+            if len(t) > 3:
+                for j in range(3, len(t)):
+                    r[f"extra_{j}"] = t[j]
+            return r
+        else:
+            return {"token": str(t), "value": None}
+
+    # process in batches
+    for start in range(0, len(sequences), batch_size):
+        batch = sequences[start:start + batch_size]
+
+        if granularity == "token":
+            out = lm.token_score(batch, bos_token=BOS, surprisal=surprisal, base_two=base_two, rank=rank)
+            # out expected as list of sequence outputs
+            if not isinstance(out, list):
+                out = []
+            for seq_idx, seq in enumerate(batch):
+                seq_res = []
+                seq_out = out[seq_idx] if seq_idx < len(out) else []
+                for i, t in enumerate(seq_out):
+                    seq_res.append(normalize_item(t, surprisal))
+                # include sequence_id if available
+                global_idx = start + seq_idx
+                item = {"sequence": seq, "scores": seq_res}
+                if seq_ids and global_idx < len(seq_ids):
+                    item["sequence_id"] = seq_ids[global_idx]
+                results.append(item)
+
+        elif granularity == "parsed":
+            # remove bracket markers before scoring
+            seqs_clean = [s.replace("[", "").replace("]", "") for s in batch]
+            out = lm.word_score_tokenized(seqs_clean, bos_token=BOS, tokenize_function=word_tokenizer, surprisal=surprisal, base_two=base_two)
+            if not isinstance(out, list):
+                out = []
+            for seq_idx, seq in enumerate(batch):
+                seq_res = []
+                seq_out = out[seq_idx] if seq_idx < len(out) else []
+                # extract token texts and values
+                token_texts = []
+                token_values = []
+                token_extras = []
+                for t in seq_out:
+                    ni = normalize_item(t, surprisal)
+                    token_texts.append(ni.get("token") or '')
+                    token_values.append(ni.get("value"))
+                    extras = {k: v for k, v in ni.items() if k not in ("token", "value")}
+                    token_extras.append(extras)
+
+                # find bracketed substrings in original seq (raw content between brackets)
+                bracket_ranges = []
+                sfull = batch[seq_idx]
+                idx = 0
+                while True:
+                    start_b = sfull.find('[', idx)
+                    if start_b == -1:
+                        break
+                    end_b = sfull.find(']', start_b + 1)
+                    if end_b == -1:
+                        break
+                    raw = sfull[start_b + 1:end_b]
+                    bracket_ranges.append((start_b, end_b, raw))
+                    idx = end_b + 1
+
+                matched_token_ranges = []
+                used = [False] * len(token_texts)
+                for (_, _, raw) in bracket_ranges:
+                    if not raw.strip():
+                        continue
+                    btokens = word_tokenizer(raw)
+                    if not btokens:
+                        continue
+                    norm_b = [b.lower() for b in btokens]
+                    norm_tokens = [t.lower() for t in token_texts]
+                    for i in range(0, len(norm_tokens) - len(norm_b) + 1):
+                        if any(used[i + j] for j in range(len(norm_b))):
+                            continue
+                        match = True
+                        for j in range(len(norm_b)):
+                            if norm_tokens[i + j] != norm_b[j]:
+                                match = False
+                                break
+                        if match:
+                            matched_token_ranges.append((i, i + len(norm_b) - 1, raw))
+                            for j in range(len(norm_b)):
+                                used[i + j] = True
+                            break
+
+                i = 0
+                while i < len(token_texts):
+                    m = next((r for r in matched_token_ranges if r[0] == i), None)
+                    if m is not None:
+                        s_idx, e_idx, raw = m
+                        total = 0.0
+                        any_val = False
+                        for k in range(s_idx, e_idx + 1):
+                            v = token_values[k]
+                            if isinstance(v, (int, float)):
+                                total += float(v)
+                                any_val = True
+                        if any_val:
+                            if parsed_agg == "mean":
+                                count = (e_idx - s_idx + 1)
+                                val = (total / count) if count > 0 else None
+                            else:
+                                val = total
+                        else:
+                            val = None
+                        seq_res.append({"token": raw, "value": val})
+                        i = e_idx + 1
+                    else:
+                        v = token_values[i]
+                        row = {"token": token_texts[i], "value": v}
+                        row.update(token_extras[i] if i < len(token_extras) else {})
+                        seq_res.append(row)
+                        i += 1
+
+                global_idx = start + seq_idx
+                item = {"sequence": seq, "scores": seq_res}
+                if seq_ids and global_idx < len(seq_ids):
+                    item["sequence_id"] = seq_ids[global_idx]
+                results.append(item)
+
+        else:
+            # word-level batched call
+            out = lm.word_score_tokenized(batch, bos_token=BOS, tokenize_function=word_tokenizer, surprisal=surprisal, base_two=base_two)
+            if not isinstance(out, list):
+                out = []
+            for seq_idx, seq in enumerate(batch):
+                seq_res = []
+                seq_out = out[seq_idx] if seq_idx < len(out) else []
+                for t in seq_out:
+                    seq_res.append(normalize_item(t, surprisal))
+                global_idx = start + seq_idx
+                item = {"sequence": seq, "scores": seq_res}
+                if seq_ids and global_idx < len(seq_ids):
+                    item["sequence_id"] = seq_ids[global_idx]
+                results.append(item)
 
     return jsonify({"results": results})
 

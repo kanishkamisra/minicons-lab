@@ -11,11 +11,17 @@
       body { font-family: Inter, Arial, sans-serif; margin: 12px; background:#f6f7fb; color:#202124 }
       a{color:inherit}
       .wrapper { display:flex; gap:18px; align-items:flex-start }
-      .left { width:360px; flex:0 0 360px; max-height: calc(100vh - 80px); overflow:auto }
+      .left { width:460px; flex:0 0 460px; min-height: calc(100vh - 12px); height: calc(100vh - 12px); overflow:visible }
       .right { flex:1; min-width:360px; position:sticky; top:12px; align-self:flex-start }
       textarea { width:100%; height:160px; border-radius:6px; border:1px solid #dfe3ea; padding:8px; resize:vertical; font-size:15px; font-family: Inter, Arial, sans-serif }
       .row { display:flex; gap:12px; align-items:center; margin:8px 0; flex-wrap:wrap }
       .controls { background:#ffffff; padding:12px; border-radius:8px; box-shadow:0 2px 8px rgba(19,24,40,0.04) }
+      /* keep the summary visible (no scrolling) and paginated */
+      #stats { position: sticky; top: 12px; z-index: 6; overflow: visible; }
+      .pagination { display:flex; gap:6px; align-items:center; margin-top:8px; flex-wrap:wrap }
+      .pagination button { padding:8px 12px; border-radius:6px; border:1px solid transparent; background:#ffffff; color:#0b2b59; cursor:pointer; font-weight:700 }
+      .pagination button.active { background:#dbeeff; color:#0b2b59; border-color:#b6dbff }
+      .pagination button:disabled { opacity:0.5; cursor:default }
       label { font-size:14px }
       input[type=text], select { padding:6px 8px; border-radius:6px; border:1px solid #dfe3ea }
       button { background:#2b7cff; color:white; border:none; padding:10px 14px; border-radius:8px; cursor:pointer; font-weight:600 }
@@ -53,16 +59,27 @@
       <img src="{{ url_for('static', filename='minicons-logo.png') }}" alt="Minicons">
       <h2><span class="brand-minicons">minicons lab</span></h2>
     </div>
-    <div class="logo-note" style="text-align:left;margin:6px 0 12px 0;color:#6b7280;font-size:13px;max-width:100%">
-      Note: This app only scores the first 10 sentences; extra lines will be ignored.
+    <div class="app-header-controls" style="display:flex;gap:12px;justify-content:center;margin-bottom:8px">
+      <div style="display:flex;gap:6px;background:#ffffff;padding:6px;border-radius:8px;box-shadow:0 1px 3px rgba(15,23,42,0.04)">
+        <button id="mode-pilot" data-mode="pilot" style="padding:8px 12px;border-radius:6px;border:1px solid transparent;background:#ffffff;color:#0b2b59;font-weight:700">Pilot</button>
+        <button id="mode-large" data-mode="large" style="padding:8px 12px;border-radius:6px;border:1px solid transparent;background:#ffffff;color:#0b2b59">Large-scale</button>
+      </div>
+    </div>
+    <div id="mode-note" class="logo-note" style="text-align:left;margin:6px 0 12px 0;color:#6b7280;font-size:13px;max-width:100%">
+      Note: Pilot mode scores only the first 10 sentences; switch to Large-scale for batched scoring.
     </div>
 
     <div class="wrapper">
       <div class="left">
         <div class="controls">
-          <div class="row"><label style="flex:1">Model:</label><input id="model" value="kanishka/smolm-autoreg-bpe-babylm-1e-3" style="flex:1"></div>
+          <input type="hidden" id="mode" value="pilot">
+          <div class="row" id="batch-row" style="display:none"><label>Batch size: <input id="batch_size" value="16" style="width:84px"></label></div>
+          <div class="row"><label style="flex:1">Model:</label><input id="model" value="kanishka/smolm-autoreg-bpe-babylm-1e-3" style="flex:1.5; min-width:220px"></div>
           <div class="row"><label style="flex:1">Sequences (one per line):</label></div>
           <textarea id="sequences" placeholder="Enter one sentence per line\nThis is a sentence."></textarea>
+          <div class="row" id="file-row" style="display:none"><label>Upload CSV: <input id="csv_file" type="file" accept=".csv"></label>
+            <div class="muted" style="font-size:12px">CSV columns: sequence_id,sequence (no header required). Leave empty to use server test-sentences.csv.</div>
+          </div>
 
           <div class="row">
             <label>Granularity: <select id="granularity"><option value="word">word</option><option value="token">token</option><option value="parsed">parsed</option></select></label>
@@ -142,10 +159,44 @@
     </div>
 
     <script>
-      async function postScore(payload){
-        const res = await fetch('/score', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      async function postScore(payload, endpoint='/score'){
+        const res = await fetch(endpoint, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
         return res.json();
       }
+
+      // mode tabs: pilot (legacy) vs large (batched)
+      (function(){
+        const btnPilot = document.getElementById('mode-pilot');
+        const btnLarge = document.getElementById('mode-large');
+        const modeInput = document.getElementById('mode');
+        const batchRow = document.getElementById('batch-row');
+        const fileRow = document.getElementById('file-row');
+        const sequencesArea = document.getElementById('sequences');
+        const modeNote = document.getElementById('mode-note');
+        function setMode(m){
+          modeInput.value = m;
+          if (m === 'pilot'){
+              // selected: light-blue background with darker text; unselected: white with dark text
+              btnPilot.style.background = '#dbeeff'; btnPilot.style.color = '#0b2b59';
+              btnLarge.style.background = '#ffffff'; btnLarge.style.color = '#0b2b59';
+            batchRow.style.display = 'none';
+            if (fileRow) fileRow.style.display = 'none';
+            if (sequencesArea) sequencesArea.style.display = 'block';
+            modeNote.innerText = 'Note: Pilot mode scores only the first 10 sentences; switch to Large-scale for batched scoring.';
+          } else {
+              btnPilot.style.background = '#ffffff'; btnPilot.style.color = '#0b2b59';
+              btnLarge.style.background = '#dbeeff'; btnLarge.style.color = '#0b2b59';
+            batchRow.style.display = 'flex';
+            if (fileRow) fileRow.style.display = 'flex';
+            if (sequencesArea) sequencesArea.style.display = 'none';
+            modeNote.innerText = 'Large-scale mode: sequences will be processed in batches by the server.';
+          }
+        }
+        btnPilot.addEventListener('click', ()=> setMode('pilot'));
+        btnLarge.addEventListener('click', ()=> setMode('large'));
+        // initialize
+        setMode(modeInput.value || 'pilot');
+      })();
 
       // update parsed-agg control based on granularity
       function updateRankState(){
@@ -165,15 +216,26 @@
 
       document.getElementById('submit').onclick = async ()=>{
         const model = document.getElementById('model').value;
-        // read sequences, keep only first 10 non-empty lines
+        // read sequences
         const sequencesRaw = document.getElementById('sequences').value || '';
         const seqLines = sequencesRaw.split(/\r?\n/).map(s=>s.trim()).filter(s=>s.length>0);
-        const MAX_SEQS = 10;
-        const limited = seqLines.slice(0, MAX_SEQS);
-        if (seqLines.length > MAX_SEQS){
-          document.getElementById('status').innerText = `Only first ${MAX_SEQS} sequences will be scored (showing ${limited.length})`;
+        const mode = document.getElementById('mode').value || 'pilot';
+        let sequences = seqLines;
+        if (mode === 'pilot'){
+          const MAX_SEQS = 10;
+          sequences = seqLines.slice(0, MAX_SEQS);
+          if (seqLines.length > MAX_SEQS){
+            document.getElementById('status').innerText = `Only first ${MAX_SEQS} sequences will be scored (showing ${sequences.length})`;
+          }
+        } else {
+          // large mode: allow many, but cap as a safety
+          const MAX_SEQS_LARGE = 1000;
+          if (seqLines.length > MAX_SEQS_LARGE){
+            sequences = seqLines.slice(0, MAX_SEQS_LARGE);
+            document.getElementById('status').innerText = `Large-scale: capped at ${MAX_SEQS_LARGE} sequences (showing ${sequences.length})`;
+          }
         }
-        const sequences = limited.join('\n');
+        sequences = sequences.join('\n');
         const granularity = document.getElementById('granularity').value;
         const value = document.getElementById('value').value;
         const base_two = document.getElementById('base_two').checked;
@@ -187,21 +249,53 @@
 
         const parsed_agg = document.getElementById('parsed_agg') ? document.getElementById('parsed_agg').value : 'sum';
         const payload = { model, sequences, granularity, surprisal: value==='surprisal', base_two, rank, device, bos, parsed_agg };
-        const resp = await postScore(payload);
+        let endpoint = '/score';
+        if (document.getElementById('mode').value === 'large'){
+          endpoint = '/score_batched';
+          const b = parseInt(document.getElementById('batch_size').value || '16');
+          payload.batch_size = (isNaN(b) || b <= 0) ? 16 : b;
+        }
+        // for large-mode, allow uploading CSV file content
+        if (document.getElementById('mode').value === 'large'){
+          const fi = document.getElementById('csv_file');
+          if (fi && fi.files && fi.files.length){
+            // read first file as text
+            const f = fi.files[0];
+            const text = await new Promise((resolve, reject)=>{
+              const rdr = new FileReader(); rdr.onload = e=>resolve(e.target.result); rdr.onerror = e=>reject(e); rdr.readAsText(f);
+            });
+            payload.csv = text;
+          }
+        }
+        const resp = await postScore(payload, endpoint);
         if (resp.error){ document.getElementById('status').innerText = resp.error; return }
 
         document.getElementById('status').innerText = 'Rendering plot';
         const results = resp.results || [];
 
-        // build flat data for Vega-Lite
+        // prepare selection for plotting when in large mode: preselect first two
+        const isLarge = (document.getElementById('mode').value === 'large');
+        if (isLarge){
+          window._selectedSeqIds = (results.slice(0,2).map((r,idx)=> r.sequence_id || String(idx+1)));
+        } else {
+          window._selectedSeqIds = null;
+        }
+
+        // build flat data for Vega-Lite (filter by selected ids in large mode)
         const dataVals = [];
         results.forEach((r, idx)=>{
-          const seqName = r.sequence.substring(0,80);
+          const seqId = r.sequence_id || String(idx+1);
+          const seqLabel = (r.sequence || '').substring(0,80);
+          // if large mode, only include selected sequences
+          if (isLarge && Array.isArray(window._selectedSeqIds) && window._selectedSeqIds.indexOf(String(seqId))===-1){
+            return;
+          }
           (r.scores||[]).forEach((s,i)=>{
             // collect extras into a JSON string for display
             const extras = {};
             Object.keys(s).forEach(k=>{ if (k!=='token' && k!=='value') extras[k]=s[k]; });
-            dataVals.push({ seq: seqName, pos: i+1, token: s.token||'', value: (s.value==null? null: s.value), extras: Object.keys(extras).length? JSON.stringify(extras): '' });
+            const label = isLarge ? (seqId + ': ' + seqLabel) : seqLabel;
+            dataVals.push({ seq: label, seq_id: seqId, pos: i+1, token: s.token||'', value: (s.value==null? null: s.value), extras: Object.keys(extras).length? JSON.stringify(extras): '' });
           });
         });
 
@@ -212,11 +306,13 @@
         function renderStats(results, valueKey, granularity){
           if (!results || !results.length){ statsEl.hidden = true; statsTableEl.innerHTML = ''; return; }
           statsEl.hidden = false;
+          const isLargeLocal = (document.getElementById('mode').value === 'large');
           let rows = [];
           let overallTotal = 0;
           let overallCount = 0;
-          results.forEach(r=>{
-            const seqName = r.sequence.substring(0,80);
+          results.forEach((r, idx)=>{
+            const seqId = r.sequence_id || String(idx+1);
+            const seqName = (r.sequence||'').substring(0,80);
             const items = (r.scores||[]);
             const total = items.reduce((s,it)=> s + (it.value==null? 0: Number(it.value)), 0);
             overallTotal += total;
@@ -229,16 +325,86 @@
               avg = cnt? (tsum / cnt) : null;
               overallCount += cnt;
             }
-            rows.push({ seq: seqName, total, avg });
+            rows.push({ seq_id: seqId, seq: seqName, total, avg });
           });
-          // build table
-          let html = '<table style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:6px">Sequence</th><th style="text-align:right;padding:6px">Total ('+valueKey+')</th><th style="text-align:right;padding:6px">Avg per token</th></tr></thead><tbody>';
-          rows.forEach(r=>{ html += `<tr><td style="padding:6px;border-top:1px solid #eee">${r.seq}</td><td style="padding:6px;border-top:1px solid #eee;text-align:right">${formatNum(r.total)}</td><td style="padding:6px;border-top:1px solid #eee;text-align:right">${r.avg==null? '—': formatNum(r.avg)}</td></tr>` });
-          // overall row
+          // build paginated table (8 rows per page)
+          const pageSize = 8;
+          const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+          if (!window._statsPage) window._statsPage = 1;
+          if (window._statsPage > totalPages) window._statsPage = totalPages;
+          const startIdx = (window._statsPage - 1) * pageSize;
+          const endIdx = Math.min(startIdx + pageSize, rows.length);
+
+          let html = '<table style="width:100%;border-collapse:collapse"><thead><tr>';
+          if (isLargeLocal) html += '<th style="text-align:left;padding:6px">Plot</th>';
+          html += '<th style="text-align:left;padding:6px">Sequence</th><th style="text-align:right;padding:6px">Total ('+valueKey+')</th><th style="text-align:right;padding:6px">Avg per token</th></tr></thead><tbody>';
+          for (let idx = startIdx; idx < endIdx; idx++){
+            const r = rows[idx];
+            const checked = (isLargeLocal && Array.isArray(window._selectedSeqIds) && window._selectedSeqIds.indexOf(String(r.seq_id))!==-1) ? 'checked' : '';
+            html += '<tr>';
+            if (isLargeLocal){ html += `<td style="padding:6px;border-top:1px solid #eee"><input class="plot-select" type="checkbox" data-seqid="${r.seq_id}" ${checked}></td>`; }
+            html += `<td style="padding:6px;border-top:1px solid #eee">${r.seq}</td><td style="padding:6px;border-top:1px solid #eee;text-align:right">${formatNum(r.total)}</td><td style="padding:6px;border-top:1px solid #eee;text-align:right">${r.avg==null? '—': formatNum(r.avg)}</td></tr>`;
+          }
+          // overall row (always show)
           const overallAvg = (overallCount>0)? (overallTotal / overallCount) : null;
-          html += `<tr style="font-weight:600"><td style="padding:6px;border-top:2px solid #ddd">Overall</td><td style="padding:6px;border-top:2px solid #ddd;text-align:right">${formatNum(overallTotal)}</td><td style="padding:6px;border-top:2px solid #ddd;text-align:right">${overallAvg==null? '—': formatNum(overallAvg)}</td></tr>`;
+          html += `<tr style="font-weight:600"><td style="padding:6px;border-top:2px solid #ddd"></td><td style="padding:6px;border-top:2px solid #ddd">Overall</td><td style="padding:6px;border-top:2px solid #ddd;text-align:right">${formatNum(overallTotal)}</td><td style="padding:6px;border-top:2px solid #ddd;text-align:right">${overallAvg==null? '—': formatNum(overallAvg)}</td></tr>`;
           html += '</tbody></table>';
+
+          // pagination controls
+          html += '<div class="pagination" role="navigation">';
+          html += `<button class="page-btn" data-page="prev" ${window._statsPage<=1? 'disabled':''}>Prev</button>`;
+          for (let p=1;p<=totalPages;p++){
+            const act = (p===window._statsPage)? 'active' : '';
+            html += `<button class="page-btn ${act}" data-page="${p}">${p}</button>`;
+          }
+          html += `<button class="page-btn" data-page="next" ${window._statsPage>=totalPages? 'disabled':''}>Next</button>`;
+          html += '</div>';
+
           statsTableEl.innerHTML = html;
+
+          // wire checkbox events for selecting sequences to plot (only for visible rows)
+          if (isLargeLocal){
+            const boxes = statsTableEl.querySelectorAll('.plot-select');
+            boxes.forEach(b=> b.addEventListener('change', (e)=>{
+              const sid = String(e.target.getAttribute('data-seqid'));
+              if (!window._selectedSeqIds) window._selectedSeqIds = [];
+              if (e.target.checked){
+                if (window._selectedSeqIds.indexOf(sid)===-1) window._selectedSeqIds.push(sid);
+              } else {
+                const j = window._selectedSeqIds.indexOf(sid); if (j!==-1) window._selectedSeqIds.splice(j,1);
+              }
+              // rebuild dataVals and re-render plot
+              const newData = [];
+              results.forEach((r, idx)=>{
+                const seqId = r.sequence_id || String(idx+1);
+                const seqLabel = (r.sequence||'').substring(0,80);
+                if (window._selectedSeqIds.indexOf(String(seqId))===-1) return;
+                (r.scores||[]).forEach((s,i)=>{
+                  const extras = {};
+                  Object.keys(s).forEach(k=>{ if (k!=='token' && k!=='value') extras[k]=s[k]; });
+                  const label = seqId + ': ' + seqLabel;
+                  newData.push({ seq: label, seq_id: seqId, pos: i+1, token: s.token||'', value: (s.value==null? null: s.value), extras: Object.keys(extras).length? JSON.stringify(extras): '' });
+                });
+              });
+              renderD3(newData, document.getElementById('theme').value, null);
+            }));
+          }
+
+          // wire pagination buttons
+          const pagBtns = statsTableEl.querySelectorAll('.page-btn');
+          pagBtns.forEach(b=> b.addEventListener('click', (e)=>{
+            const v = e.target.getAttribute('data-page');
+            if (v === 'prev'){
+              if (window._statsPage>1) window._statsPage -= 1;
+            } else if (v === 'next'){
+              if (window._statsPage < totalPages) window._statsPage += 1;
+            } else {
+              const np = parseInt(v);
+              if (!isNaN(np)) window._statsPage = np;
+            }
+            // re-render stats with same args
+            renderStats(results, valueKey, granularity);
+          }));
         }
 
         // store last results so downloads and re-renders can reuse
@@ -329,16 +495,16 @@
             return '';
           }
 
-          // build rows (sequence_id is numeric index starting at 1)
+          // build rows (use sequence_id if present else numeric index)
           let rowsHtml = '';
           results.forEach((r, ridx)=>{
-            const seqNum = (ridx + 1);
+            const seqId = r.sequence_id || (ridx + 1);
             (r.scores||[]).forEach((s, sidx)=>{
               const token = s.token || '';
               const val = (s.value==null || isNaN(s.value))? '': Number(s.value).toFixed(6);
               const rankVal = getRankFromScore(s);
               const wordId = (sidx + 1);
-              rowsHtml += `<tr><td style="padding:6px;border-top:1px solid #f2f4f6;text-align:right">${seqNum}</td><td style="padding:6px;border-top:1px solid #f2f4f6;text-align:right">${wordId}</td><td style="padding:6px;border-top:1px solid #f2f4f6">${escapeHtml(token)}</td><td style="padding:6px;border-top:1px solid #f2f4f6;text-align:right">${val}</td>`;
+              rowsHtml += `<tr><td style="padding:6px;border-top:1px solid #f2f4f6;text-align:right">${escapeHtml(seqId)}</td><td style="padding:6px;border-top:1px solid #f2f4f6;text-align:right">${wordId}</td><td style="padding:6px;border-top:1px solid #f2f4f6">${escapeHtml(token)}</td><td style="padding:6px;border-top:1px solid #f2f4f6;text-align:right">${val}</td>`;
               if (granularity==='token') rowsHtml += `<td style="padding:6px;border-top:1px solid #f2f4f6;text-align:right">${rankVal}</td>`;
               rowsHtml += '</tr>';
             });
